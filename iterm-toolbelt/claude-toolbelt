@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Manage the iTerm2 Toolbelt panel: claude-toolbelt {setup,start,stop,restart,status,logs}.
+
+Runs server.py (panel) and register_tool.py (iTerm2 registration, focus tracking, pane switching) as
+detached background processes. PID files and logs live in ~/.claude-toolbelt/.
+"""
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+STATE_DIR = os.path.expanduser("~/.claude-toolbelt")
+PORT = int(os.environ.get("CLAUDE_TOOLBELT_PORT", "8765"))
+PROCS = {"server": "server.py", "iterm": "register_tool.py"}
+
+
+def pid_file(name):
+    return os.path.join(STATE_DIR, f"{name}.pid")
+
+
+def log_file(name):
+    return os.path.join(STATE_DIR, f"{name}.log")
+
+
+def running_pid(name):
+    """PID of the managed process, or None. Checks the command line so a recycled PID is never signalled."""
+    try:
+        with open(pid_file(name)) as f:
+            pid = int(f.read())
+    except (OSError, ValueError):
+        return None
+    cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    return pid if PROCS[name] in cmd else None
+
+
+def foreign_registrars():
+    """(pid, command) of register_tool.py processes we don't manage, e.g. a copy started by hand.
+
+    Two registrars fight over the same Toolbelt tool id, and a stale one keeps serving old code.
+    """
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    managed = running_pid("iterm")
+    found = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if PROCS["iterm"] in cmd and "python" in cmd and int(pid) not in (managed, os.getpid()):
+            found.append((int(pid), cmd.strip()))
+    return found
+
+
+def panel_ok():
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=2).read()
+        return True
+    except OSError:
+        return False
+
+
+def log_tail(name, lines=8):
+    try:
+        with open(log_file(name)) as f:
+            return "".join(f.readlines()[-lines:]).rstrip()
+    except OSError:
+        return ""
+
+
+def spawn(name):
+    """Start a managed process detached from this terminal; exit with its log tail if it dies at once."""
+    with open(log_file(name), "ab") as log:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(HERE, PROCS[name])],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+        )
+    with open(pid_file(name), "w") as f:
+        f.write(str(proc.pid))
+    time.sleep(1.5)
+    if proc.poll() is not None:
+        sys.exit(f"{name}: exited immediately; last log lines:\n{log_tail(name)}\n(full log: claude-toolbelt logs {name})")
+    print(f"{name}: started (pid {proc.pid})")
+
+
+def start_server():
+    if running_pid("server"):
+        print(f"server: already running (pid {running_pid('server')})")
+        return
+    spawn("server")
+    for _ in range(20):
+        if panel_ok():
+            return
+        time.sleep(0.25)
+    sys.exit(f"server: running but http://127.0.0.1:{PORT}/ does not respond (is the port taken?)\n{log_tail('server')}")
+
+
+def start_iterm(replace):
+    if running_pid("iterm"):
+        print(f"iterm: already running (pid {running_pid('iterm')})")
+        return
+    if subprocess.run([sys.executable, "-c", "import iterm2"], capture_output=True).returncode:
+        sys.exit("iterm: the iterm2 Python package is missing; run `claude-toolbelt setup`")
+    for pid, cmd in foreign_registrars():
+        if not replace:
+            sys.exit(f"iterm: another register_tool.py is already running (pid {pid}: {cmd[:100]}).\n"
+                     f"  Stop it yourself, or re-run with --replace to stop it for you.")
+        os.kill(pid, signal.SIGTERM)
+        print(f"iterm: stopped stray registrar (pid {pid})")
+        time.sleep(0.5)
+    spawn("iterm")
+
+
+def stop_one(name):
+    pid = running_pid(name)
+    if not pid:
+        print(f"{name}: not running")
+    else:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not running_pid(name):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+        print(f"{name}: stopped")
+    if os.path.exists(pid_file(name)):
+        os.remove(pid_file(name))
+
+
+def cmd_start(args):
+    replace = getattr(args, "replace", False)
+    if args.only in (None, "server"):
+        start_server()
+    if args.only in (None, "iterm"):
+        start_iterm(replace)
+
+
+def cmd_stop(args):
+    for name in ([args.only] if args.only else reversed(PROCS)):
+        stop_one(name)
+
+
+def cmd_restart(args):
+    cmd_stop(args)
+    cmd_start(args)
+
+
+def cmd_status(_args):
+    for name in PROCS:
+        pid = running_pid(name)
+        print(f"{name:7} {'running (pid ' + str(pid) + ')' if pid else 'stopped'}")
+    ok = panel_ok()
+    print(f"panel   {'responding' if ok else 'not responding'} on http://127.0.0.1:{PORT}/")
+    if not ok:
+        print("        (the Toolbelt panel shows blank white until the server is up: claude-toolbelt start)")
+    for pid, cmd in foreign_registrars():
+        print(f"warning: unmanaged register_tool.py (pid {pid}) is running; `claude-toolbelt restart --replace` stops it")
+
+
+def cmd_logs(args):
+    names = [args.name] if args.name else list(PROCS)
+    paths = [log_file(n) for n in names if os.path.exists(log_file(n))]
+    if not paths:
+        print("no logs yet")
+        return
+    os.execvp("tail", ["tail", "-n", "40", *(["-f"] if args.follow else []), *paths])
+
+
+def pause(prompt):
+    input(f"\n{prompt}\n  -> press Enter to continue (Ctrl-C to quit) ")
+
+
+def cmd_setup(_args):
+    print("claude-toolbelt setup: 4 steps, each waits for you.")
+
+    pause("Step 1/4: install the iTerm2 Python package (pip install iterm2).")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "iterm2"], check=True)
+    print("  done.")
+
+    pause("Step 2/4: in iTerm2 open Settings (Cmd+,) > General > Magic and tick\n"
+          "  'Enable Python API'. Do it now, then come back here.")
+
+    pause("Step 3/4: start the panel server and the iTerm2 connection in the background.")
+    strays = foreign_registrars()
+    replace = bool(strays) and input(
+        f"  Found {len(strays)} register_tool.py already running (an older copy?). Stop it? [y/N] "
+    ).strip().lower() == "y"
+    cmd_start(argparse.Namespace(only=None, replace=replace))
+    print("  If iTerm2 pops up a permission prompt for the script, click Allow.")
+
+    pause("Step 4/4: in iTerm2 choose View > Show Toolbelt, then View > 'Claude Context'\n"
+          "  so it has a tick. The panel appears in the right-hand sidebar.")
+
+    print("\nCurrent state:")
+    cmd_status(None)
+    print("\nDone. Manage it with: claude-toolbelt {start,stop,restart,status,logs}")
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name, fn, help_ in [("start", cmd_start, "start in background"), ("stop", cmd_stop, "stop"),
+                            ("restart", cmd_restart, "stop then start")]:
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("--only", choices=PROCS, help="act on one process only")
+        if name != "stop":
+            p.add_argument("--replace", action="store_true", help="also stop an unmanaged register_tool.py")
+        p.set_defaults(fn=fn)
+    sub.add_parser("status", help="show process and panel state").set_defaults(fn=cmd_status)
+    sub.add_parser("setup", help="guided first-time setup").set_defaults(fn=cmd_setup)
+    p = sub.add_parser("logs", help="tail logs")
+    p.add_argument("name", nargs="?", choices=PROCS)
+    p.add_argument("-f", "--follow", action="store_true")
+    p.set_defaults(fn=cmd_logs)
+    args = parser.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

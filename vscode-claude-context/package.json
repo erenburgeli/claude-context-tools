@@ -1,0 +1,74 @@
+{
+  "name": "claude-context",
+  "displayName": "Claude Context",
+  "description": "Sidebar and status bar showing model, effort, git state, context usage and subagents of the Claude Code sessions in this window",
+  "publisher": "erenburgeli",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/erenburgeli/claude-context-tools"
+  },
+  "license": "UNLICENSED",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeContext",
+          "title": "Claude Context",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeContext": [
+        {
+          "type": "webview",
+          "id": "claudeContext.sessions",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeContext.focus",
+        "title": "Claude Context: Show"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Context",
+      "properties": {
+        "claudeContext.showAllWorkspaces": {
+          "type": "boolean",
+          "default": false,
+          "description": "List Claude Code sessions from every VS Code window, not just ones inside this window's workspace folders."
+        },
+        "claudeContext.includeTerminalSessions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also list sessions started with the claude CLI in a terminal, not only the Claude extension panel."
+        },
+        "claudeContext.refreshSeconds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "How often to refresh, in seconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/reader.test.js",
+    "package": "npx --yes @vscode/vsce@4.0.0 package --no-dependencies --allow-missing-repository"
+  },
+  "icon": "media/logo.png"
+}

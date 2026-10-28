@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Manage the Claude Context iTerm2 status bar component: claude-statusbar {setup,start,stop,restart,status,logs,autostart}.
+
+Runs statusbar.py as a detached background process. Its PID file and log live in ~/.claude-statusbar/.
+"""
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+STATE_DIR = os.path.expanduser("~/.claude-statusbar")
+SCRIPT = "statusbar.py"
+PID_FILE = os.path.join(STATE_DIR, "statusbar.pid")
+LOG_FILE = os.path.join(STATE_DIR, "statusbar.log")
+AUTOLAUNCH_LINK = os.path.expanduser("~/Library/Application Support/iTerm2/Scripts/AutoLaunch/claude_statusbar.py")
+
+
+def running_pid():
+    """PID of the managed process, or None. Checks the command line so a recycled PID is never signalled."""
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read())
+    except (OSError, ValueError):
+        return None
+    cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    return pid if SCRIPT in cmd else None
+
+
+def strays():
+    """PIDs of statusbar.py processes we don't manage, e.g. one started by hand; two would fight over the component id."""
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    found = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        argv = cmd.split()
+        if (argv and os.path.basename(argv[0]).startswith("python")
+                and any(os.path.basename(t).endswith(SCRIPT) for t in argv[1:3])
+                and int(pid) not in (running_pid(), os.getpid())):
+            found.append(int(pid))
+    return found
+
+
+def log_tail(lines=8):
+    try:
+        with open(LOG_FILE) as f:
+            return "".join(f.readlines()[-lines:]).rstrip()
+    except OSError:
+        return ""
+
+
+def cmd_start(args):
+    if running_pid():
+        print(f"already running (pid {running_pid()})")
+        return
+    if subprocess.run([sys.executable, "-c", "import iterm2"], capture_output=True).returncode:
+        sys.exit("the iterm2 Python package is missing; run `claude-statusbar setup`")
+    for pid in strays():
+        if not getattr(args, "replace", False):
+            sys.exit(f"another {SCRIPT} is already running (pid {pid}); stop it, or re-run with --replace")
+        os.kill(pid, signal.SIGTERM)
+        print(f"stopped stray process (pid {pid})")
+        time.sleep(0.5)
+    with open(LOG_FILE, "ab") as log:
+        proc = subprocess.Popen([sys.executable, os.path.join(HERE, SCRIPT)],
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    with open(PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+    time.sleep(1.5)
+    if proc.poll() is not None:
+        sys.exit(f"exited immediately; last log lines:\n{log_tail()}\n(full log: claude-statusbar logs)")
+    print(f"started (pid {proc.pid})")
+
+
+def cmd_stop(_args):
+    pid = running_pid()
+    if not pid:
+        print("not running")
+    else:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not running_pid():
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+        print("stopped")
+    if os.path.exists(PID_FILE):
+        os.remove(PID_FILE)
+
+
+def cmd_restart(args):
+    cmd_stop(args)
+    cmd_start(args)
+
+
+def cmd_autostart(args):
+    """Link statusbar.py into iTerm2's AutoLaunch folder so iTerm2 starts it (and stops it on quit)."""
+    if args.state == "off":
+        if os.path.islink(AUTOLAUNCH_LINK):
+            os.remove(AUTOLAUNCH_LINK)
+        print("autostart off")
+        return
+    os.makedirs(os.path.dirname(AUTOLAUNCH_LINK), exist_ok=True)
+    if os.path.lexists(AUTOLAUNCH_LINK):
+        os.remove(AUTOLAUNCH_LINK)
+    os.symlink(os.path.join(HERE, SCRIPT), AUTOLAUNCH_LINK)
+    print(f"autostart on: {AUTOLAUNCH_LINK}")
+
+
+def cmd_status(_args):
+    pid = running_pid()
+    print(f"statusbar {'running (pid ' + str(pid) + ')' if pid else 'stopped'}")
+    print(f"autostart {'on' if os.path.islink(AUTOLAUNCH_LINK) else 'off'}")
+    for stray in strays():
+        print(f"warning: unmanaged {SCRIPT} (pid {stray}) is running; `claude-statusbar restart --replace` stops it")
+
+
+def cmd_logs(args):
+    if not os.path.exists(LOG_FILE):
+        print("no logs yet")
+        return
+    os.execvp("tail", ["tail", "-n", "40", *(["-f"] if args.follow else []), LOG_FILE])
+
+
+def pause(prompt):
+    input(f"\n{prompt}\n  -> press Enter to continue (Ctrl-C to quit) ")
+
+
+def cmd_setup(_args):
+    print("claude-statusbar setup: 3 steps and an optional autostart, each waits for you.")
+
+    pause("Step 1/3: install the iTerm2 Python package (pip install iterm2).")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "iterm2"], check=True)
+    print("  done.")
+
+    pause("Step 2/3: in iTerm2 open Settings (Cmd+,) > General > Magic and tick\n"
+          "  'Enable Python API'. Do it now, then come back here.")
+
+    pause("Step 3/3: start the component in the background.")
+    cmd_start(argparse.Namespace(replace=bool(strays()) and input(
+        "  Found a statusbar.py already running (an older copy?). Stop it? [y/N] ").strip().lower() == "y"))
+    print("  If iTerm2 pops up a permission prompt for the script, click Allow.")
+
+    if input("\nStart automatically with iTerm2, so you never have to run `start` again? [Y/n] ").strip().lower() != "n":
+        cmd_autostart(argparse.Namespace(state="on"))
+
+    print("\nNow show it: iTerm2 > Settings > Profiles > Session > tick 'Status bar enabled' > Configure Status Bar,\n"
+          "then drag 'Claude Context' into the Active Components area.")
+    print("\nDone. Manage it with: claude-statusbar {start,stop,restart,status,logs,autostart}")
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name, fn, help_ in [("start", cmd_start, "start in background"), ("stop", cmd_stop, "stop"),
+                            ("restart", cmd_restart, "stop then start")]:
+        p = sub.add_parser(name, help=help_)
+        if name != "stop":
+            p.add_argument("--replace", action="store_true", help=f"also stop an unmanaged {SCRIPT}")
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("autostart", help="start with iTerm2 (AutoLaunch)")
+    p.add_argument("state", nargs="?", choices=["on", "off"], default="on")
+    p.set_defaults(fn=cmd_autostart)
+    sub.add_parser("status", help="show process state").set_defaults(fn=cmd_status)
+    sub.add_parser("setup", help="guided first-time setup").set_defaults(fn=cmd_setup)
+    p = sub.add_parser("logs", help="tail the log")
+    p.add_argument("-f", "--follow", action="store_true")
+    p.set_defaults(fn=cmd_logs)
+    args = parser.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
