@@ -2,6 +2,8 @@
 
 See what each Claude Code session is doing (model, effort, git state, context usage, subagents) without a Claude Code status line or hooks. Every tool here only reads the local files Claude already writes (`~/.claude/sessions`, the transcripts under `~/.claude/projects`, `settings.json`). Nothing leaves your machine.
 
+> The iTerm2 status bar and the combined iTerm2 installer were built by **David Levi**. Thanks, David!
+
 | Tool | Where | What |
 |---|---|---|
 | [`iterm-claude-statusbar`](iterm-claude-statusbar) | iTerm2 status bar | Per-pane session info, right in the tab |
@@ -10,7 +12,7 @@ See what each Claude Code session is doing (model, effort, git state, context us
 
 ## Claude Context in your iTerm2 status bar: session info at a glance, per tab, plus one installer for both iTerm2 plugins
 
-Building on the Toolbelt panel (the foundation of all of this), the status bar is an alternative for anyone who wants each tab to show its own session info right in the tab, without opening a sidebar. There is a single installer for both, so you can pick the status bar, the Toolbelt panel, or both.
+By David Levi. Building on the Toolbelt panel (the foundation of all of this), the status bar is an alternative for anyone who wants each tab to show its own session info right in the tab, without opening a sidebar. There is a single installer for both, so you can pick the status bar, the Toolbelt panel, or both.
 
 ### What the status bar gives you
 
@@ -63,4 +65,4 @@ Needs Node.js. See [vscode-claude-context/README.md](vscode-claude-context/READM
 ## Credits
 
 - iTerm2 Toolbelt panel and VS Code / Cursor extension: Eli Erenburg.
-- iTerm2 status bar and the combined installer: David Levi.
+- iTerm2 status bar, the combined installer and the write-up above: **David Levi**.
