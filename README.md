@@ -2,7 +2,9 @@
 
 See what each Claude Code session is doing (model, effort, git state, context usage, subagents) without a Claude Code status line or hooks. Every tool here only reads the local files Claude already writes (`~/.claude/sessions`, the transcripts under `~/.claude/projects`, `settings.json`). Nothing leaves your machine.
 
-> The iTerm2 status bar and the combined iTerm2 installer were built by **David Levi**. Thanks, David!
+> [!IMPORTANT]
+> ### 🙏 Built with David Levi
+> **The iTerm2 status bar and the combined iTerm2 installer were built by David Levi.** Thanks, David!
 
 | Tool | Where | What |
 |---|---|---|
